@@ -1,0 +1,620 @@
+---
+title: "VIAME Output Analysis Report"
+author: "Author: Kelsey Martin \n\n VIAME Analysts: Jack Prior and Sara Thomas"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: readable  # A clean theme
+    toc: true        # Adds a table of contents
+    toc_float: true  # Makes the TOC float on the side
+    toc_depth: 2     # Tell the TOC which header level to display
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width = 8, fig.height = 6)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(ggpubr) # For stat_regline_equation
+library(stringr)
+library(broom)
+library(flextable)
+library(MuMIn)
+library(lsmeans)
+library(boot)
+library(pander)
+library(reshape)
+library(reshape2)
+options(width = 850)
+opts_knit$set(progress=FALSE, verbose=FALSE)
+panderOptions('table.split.table', Inf)
+knitr::opts_chunk$set(fig.pos = '!h')
+options(knitr.duplicate.label = "allow")
+
+did_we_skip <- "no"
+unique_years <- sort(unique(spec_master$year))
+
+count_models <- function(df,species, year, confidence) {
+  df <- df %>%   
+    dplyr::filter(Species == species, year == year, Confidence == confidence)
+  glm.out <- glm(Manual ~ VIAME_MaxN, family = poisson(),data=df)
+  anova(glm.out)
+  print(summary(glm.out))
+  
+  lm.out <- lm(Manual ~ VIAME_MaxN,data=df)
+  anova(lm.out)
+  print(summary(lm.out))
+}
+
+lm_plots <- function(df, species, year) {
+  df <- df %>% 
+    dplyr::filter(Species == species, year == year)
+  spec_title <- paste(gsub("_", " ", str_to_sentence(species)), "Linear Model")
+  lm_plot <- ggplot(data = df, aes(x = Manual, y = VIAME_MaxN, group = Confidence))+
+    stat_regline_equation(label.x = -Inf, label.y = Inf, vjust = 2, hjust = -0.05) +
+    stat_regline_equation(label.x = -Inf, label.y = Inf, vjust = 3, hjust = -0.05, aes(label = after_stat(rr.label))) +
+    scale_y_continuous(expand = c(0,0.1)) +
+    geom_smooth(se = TRUE, method = lm) +
+    geom_point(data=df,aes(Manual,VIAME_MaxN)) +
+    geom_count(aes(size = after_stat(n), group = 1), pch = 21, fill = "grey40", color = "black") +
+    scale_size_area(max_size = 6)  +
+    facet_wrap(~Confidence, scales = "free_y") +
+    xlab("Validation Set MaxN") + ylab("VIAME MaxN")+ ggtitle(spec_title, subtitle = paste("Year:", year)) +
+    theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), 
+                      plot.title = element_text(vjust = 4, size = 14, hjust = 0.5),
+                      plot.subtitle = element_text(vjust = 4, size = 12, hjust = 0.5, face = "italic"),
+                      plot.margin = unit(c(0.3,0.2,0.2,0.2), "inches"),
+                      legend.title = element_text(size = 12, color = "grey20"),
+                      text = element_text(size=12, color = "grey20")) + guides(size=guide_legend(title="Number of\nAgreements"))
+  
+  # Save the plot
+  ggsave(lm_plot, filename = paste0(outdir, "Part III - Data Analysis/Figures/", species, "_", year, "_allconf_lmplots.png"), device = "png", dpi = 300, height = 9, width = 11)
+  
+  # Return the plot to be printed
+  return(lm_plot)
+}
+
+```
+
+
+```{css, echo=FALSE}
+/* --- Change Header Colors --- */
+h1 {
+  color: #0085CA; 
+  font-size: 30px;
+}
+
+h2 {
+  color: #0072BB; 
+}
+
+h3 {
+  color: #003087;
+}
+
+h4 {
+  color: #002467; 
+}
+
+h5 {
+  color: #0072BB; 
+  font-size: 20px;
+}
+/* --- Change Tab Colors --- */
+/* This changes the text color of INACTIVE tabs */
+.nav-tabs > li > a {
+  color: #5A5F63; /* Dark Grey */
+}
+
+/* This changes the text color of the ACTIVE tab */
+.nav-tabs > li.active > a,
+.nav-tabs > li.active > a:hover,
+.nav-tabs > li.active > a:focus {
+  color: #de425b !important; /* A bright red. !important overrides defaults */
+  font-weight: bold;
+}
+
+/* --- Change Pill Colors (.tabset-pills) --- */
+/* This changes the text color of INACTIVE pills */
+.nav-pills > li > a {
+  color: #5A5F63; /* Dark Grey */
+}
+
+/* This changes the BACKGROUND of the ACTIVE pill */
+.nav-pills > li.active > a,
+.nav-pills > li.active > a:hover,
+.nav-pills > li.active > a:focus {
+  color: #FFFFFF !important;            /* White text */
+  background-color: #027779 !important; /* Your red as the background */
+  font-weight: bold;
+}
+```
+<br> 
+
+# `r spec_pretty` - Introduction 
+
+The report below details the performance metrics for `r spec_pretty` from the VIAME model `r as.character(unique(spec_master$Version))` for the G-FISHER Pascagoula and Panama City labs. VIAME track lengths have been shortened to reflect the times during which videos were read. Data preparation included removing any stations where no fish were observed as well as trimming the species list to only include species that had more than 20 occurrences in the manual data. For this species, the model years span `r as.numeric(min(spec_master$year))` to `r as.numeric(max(spec_master$year))`. `r if(remove_large_schools == "y" | remove_large_schools == "Y") { "Schools coded as large schools (i.e., 299, 399, or 999) in the dataset have been removed."}`
+
+***
+
+# Optimal Confidence Across Years
+```{r, echo=FALSE, warning=FALSE, error=FALSE, include = FALSE, fig.height = 6, fig.width = 7}
+metrics_group <- sub_false %>%
+  dplyr::group_by(Confidence) %>%
+  dplyr::summarise(FN = mean(FN), FP = mean(FP), Precision = mean(Precision), Accuracy = mean(Accuracy))
+
+pa_group <- pa_spec %>%
+  dplyr::group_by(Confidence, Agreement) %>%
+  dplyr::summarise(`Percent Agreement` = mean(percentage_1s))
+
+# if you answered "y" in the manual input earlier on in the code, then we are filtering out the observations where the manual reader coded this as a large school (i.e., 299, 399, and 999).
+if (remove_large_schools == "y" | remove_large_schools == "Y") {
+  spec_master <- spec_master %>%
+    dplyr::filter(!Manual %in% c(299, 399, 999))
+}
+
+# Code for selecting the optimal threshold. Do not need to run if no data for FN, FP, or Percent Agreement
+if ((nrow(sub_false) > 10 | sum(pa_group$`Percent Agreement`, na.rm = T) != 0)) {
+pa_group_long <- cast(pa_group, Confidence ~Agreement)
+params_group <- merge(metrics_group, pa_group_long, by = "Confidence", all = T)
+names(params_group) <- c("Confidence", "Avg False Negatives", "Avg False Positives", "Precision", "Accuracy", "Avg % Agreement (Exact)", "Avg % Agreement (Relaxed)")
+
+# loop over confidence to generate the precision data for all years
+sum_precis <- list(c(1:9,95))
+for (c in c(1:9,95)) {
+    con = as.numeric(paste0("0.", c))
+    df <- spec_master %>% dplyr::filter(Confidence == con)
+     if (nrow(df) > 1) {
+    ap.out <- agePrecision(~Manual+VIAME_MaxN,data=df)
+    sum_precis[[c]] <- data.frame(summary(ap.out,what="precision")) %>% dplyr::mutate(Confidence = con) %>% 
+      dplyr::select(Confidence, ACV, PercAgree)
+     } else {
+      sum_precis[[c]] <- df %>%
+      dplyr::mutate(Confidence = Confidence, ACV = NA, PercAgree = NA) %>% 
+      dplyr::select(Confidence, ACV, PercAgree)
+     }
+}
+precis <- do.call(rbind, sum_precis)
+params_group <- merge(params_group, precis, by = "Confidence", all = T) %>%
+  dplyr::select(Confidence, `Avg False Negatives`, `Avg False Positives`, `Avg % Agreement (Exact)`, `Avg % Agreement (Relaxed)`, ACV, PercAgree) %>% 
+  dplyr::arrange(ACV, .desc = T)
+params_plot_dat <- reshape::melt(params_group, id.vars = "Confidence", variable_name = "Metric", value.name = "Value")
+
+## pulling optimal values for each variable and creating an indicator to select the best Confidence threshold# Define your optimization goals for each variable
+optim_goals <- tibble::tribble(
+  ~Metric,                      ~Goal,      ~Weight,
+  "Avg False Negatives",         "min",       0.1,
+  "Avg False Positives",         "min",       0.25,
+  "Avg % Agreement (Exact)",     "max",        0,
+  "Avg % Agreement (Relaxed)",   "max",        0,
+  "ACV",                         "min",       0.35,
+  "PercAgree",                   "max",       0.3
+)
+
+# Join goals, group, and find the best confidence for each metric
+best_confidence_values <- params_plot_dat %>%
+  # Join our goals, so we know whether to find the min or max
+  inner_join(optim_goals, by = "Metric") %>%
+  group_by(Metric, Goal) %>%
+  # It conditionally finds the row with the min or max value
+  dplyr::filter(
+    (Goal == "min" & value == min(value, na.rm = TRUE)) |
+    (Goal == "max" & value == max(value, na.rm = TRUE))
+  ) %>%
+  slice_max(order_by = Confidence, n = 1, with_ties = FALSE) %>% # selecting the highest confidence in the case of ties
+  ungroup() %>%
+  dplyr::select(Metric, Goal, Confidence, value, Weight) %>%
+  dplyr::mutate(`Weighted Confidence` = Confidence*Weight)
+optimal_confidence = sum(best_confidence_values$`Weighted Confidence`)
+
+# pulling out the accuracy and precision values for the optimal_confidence threshold that is closest to one of the primary thresholds
+optimal_values <- metrics_group %>%
+  dplyr::filter(Confidence == round(optimal_confidence, digits = 1))
+precision_value <- round(as.numeric(optimal_values$Precision[1]), digits = 3)
+accuracy_value <- round(as.numeric(optimal_values$Accuracy[1]), digits = 3)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, error=FALSE, results='asis', fig.height = 6, fig.width = 8}
+# printing out a table of the difference metrics with their respective goals and optimal confidence thresholds
+if (nrow(sub_false) <= 10 & sum(pa_group$`Percent Agreement`, na.rm = T) == 0) {
+  cat("\n\n**No performance metrics or difference distribution data available for this species.**\n\n")
+  did_we_skip <- "yes"
+} else {
+cat(paste0("\n\nThe table below represents the optimal confidence thresholds for each critical parameter. An optimal confidence threshold was selected for each parameter based on the relative 'goals' for that parameter (e.g., selecting the threshold where ACV was at a minimum). Each parameter was then given a weight that was multiplied by each selected confidence. The sum of the weighted confidence variable indicates that across all years ", round(as.numeric(optimal_confidence), digits = 2), " is the optimal threshold for ", spec_pretty, ". The precision and accuracy values that correspond to the rounded optimal confidence threshold are ", precision_value, " and ", accuracy_value, ", respectively.\n"))
+mt <- flextable(best_confidence_values) %>% autofit() %>% 
+colformat_num(j = c("value"), digits = 4) %>% fit_to_width(8)
+cat(knitr::knit_print(mt))
+
+## building the line graph for all parameters
+params_plot_dat <- params_plot_dat %>%
+  dplyr::filter(Metric %in% c("Avg False Negatives", "Avg False Positives", "ACV", "PercAgree"))
+colors <- c("Avg False Negatives" = "#228B22", "Avg False Positives" = "#af2634", "ACV" = "#FFD580", "PercAgree" = "#4E79A7")
+
+
+# Building the difference distribution plot
+params_plot <- ggplot(params_plot_dat, aes(x = as.numeric(Confidence), y = value, color = Metric)) +
+  geom_rect(aes(xmin = optimal_confidence - 0.02, xmax = optimal_confidence + 0.02, ymin = -Inf, ymax = Inf, show.legend = F), color = "white", fill = "#FF474C", alpha = 0.01, show.legend = F, inherit.aes = FALSE) +
+  geom_line(linewidth = 1.75) + 
+  scale_color_manual(values = colors) +
+  labs(
+    title = "VIAME Performance Metrics Across all Years",
+    caption = "Shaded red bar represents the optimal confidence threshold\nas determined by the weighting values illustrated in the table above.",
+    x = "Confidence",
+    y = "Value",
+    color = "Metric"
+  ) +
+  scale_x_continuous(breaks = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95), expand = c(0,0)) +
+  theme_bw() +
+  theme(plot.title = element_text(vjust = 2, size = 14, hjust = 0.5, face = "bold", family = "Times", color = "#5A5F63"),
+        plot.subtitle = element_text(vjust = 2, size = 12, hjust = 0.5, family = "Times", face = "italic", color = "#5A5F63"),
+        axis.text.x=element_text(size=12, family = "Times", vjust = 0.5, angle = 45),
+        axis.text.y=element_text(size=12, family = "Times"),
+        axis.title.x=element_text(size=14, face="bold", family = "Times", vjust = -3, color = "#5A5F63"),
+        axis.title.y=element_text(size=14, face="bold", family = "Times", vjust = 4, lineheight = 0.5, color = "#5A5F63"),
+        legend.title = element_text(size = 12, family = "Times", color = "#5A5F63", face = "bold"),
+        legend.text = element_text(size = 10, family = "Times", color = "#5A5F63"),
+        legend.position = "right",
+        plot.caption = element_text(size = 10, family = "Times", face = "italic", hjust = 0, vjust = -5),
+        panel.grid.major.y = element_line(color="#D9DADB", linewidth = .2),
+        panel.grid.minor.y = element_blank(),
+        #panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.spacing=unit(0.3,"lines"),
+        strip.background=element_rect(fill = "grey60", color = "grey60"),
+        axis.line = element_line( color="#5A5F63", linewidth = .2),
+        axis.text = element_text(family = "Times", 
+                                 colour = "#5A5F63", 
+                                 size = 11),
+        panel.background = element_blank(),
+        plot.margin = unit(c(0.2,0.2,0.3,0.3), "inches")) +
+  guides(
+    color = guide_legend(position = "right", override.aes = list(size = 5), theme = theme(legend.key.spacing.x = unit(0.5, "cm")))
+  )
+print(params_plot)
+ggsave(params_plot, filename = paste0(outdir, "Part III - Data Analysis/Figures/", species, "_performance_metrics.png"), device = "png", dpi = 300, height = 6, width = 8)
+}
+```
+
+***
+    
+# Manual and VIAME Count Distribution
+VIAME and manual count comparison by analyzing the "spread" across all confidence thresholds. Dot size corresponds to frequency of occurrence of difference value, while color indicates whether viame count was below, agreed, or above manual counts. Shaded red bar represents the confidence threshold at which the standard deviation was the lowest for **weighted differences (difference * frequency)**. If no shaded bar is present then the frequency was too few for a standard deviation to be calculated for all confidence thresholds or there was no single-best confidence threshold (i.e., lowest standard deviation was the same for multiple thresholds).
+```{r, echo=FALSE, warning=FALSE, error=FALSE, results='asis', fig.height = 6, fig.width = 8}
+if (did_we_skip != "yes"){
+    diff_dist <- spec_master %>% 
+      dplyr::mutate(Difference = VIAME_MaxN - Manual) %>%
+      dplyr::group_by(Species, Confidence, year, Version, Model_info, Difference) %>% 
+      dplyr::summarise(Freq = n(), .groups = 'drop') %>%
+      dplyr::mutate(Difference_weighted = Difference * Freq)
+
+    plot_data <- diff_dist %>%
+      dplyr::mutate(Difference_Type = factor(case_when(
+        Difference < 0 ~ "Under-count (AI < Manual)",
+        Difference == 0 ~ "Correct (AI = Manual)",
+        Difference > 0 ~ "Over-count (AI > Manual)"), levels = c("Under-count (AI < Manual)", "Correct (AI = Manual)", "Over-count (AI > Manual)")))
+    
+    my_colors <- c(
+      "Under-count (AI < Manual)" = "#006d2c",  
+      "Correct (AI = Manual)"     = "#c7e9c0", 
+      "Over-count (AI > Manual)"  = "#74c476")
+    
+#### Calculating spread across all years through standard deviation and then selecting the confidence threshold with the lowest spread. This is done using the difference_weighted variable which takes into account the frequency of occurrence of optimal or sub-optimal values.
+spread <- plot_data %>%
+  dplyr::group_by(Confidence) %>%
+  dplyr::summarise(SD = sd(Difference_weighted)) %>%
+  arrange(SD, .desc = T) # arrange by lowest spread 
+bar_position <- as.numeric(factor(plot_data$Confidence))[plot_data$Confidence == as.character(spread[[1,1]])][1]   
+bar_position <- ifelse(is.na(spread[[1,2]]) | (spread[[1,2]] == spread[[2,2]]), NA, bar_position)
+
+difference_plot <- ggplot(plot_data, aes(x = as.character(Confidence), y = Difference, color = Difference_Type)) +
+  geom_rect(aes(xmin = bar_position - 0.5, xmax = bar_position + 0.5, ymin = -Inf, ymax = Inf, show.legend = F), color = "white", fill = "#FF474C", alpha = 0.01, show.legend = F, inherit.aes = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  geom_point(aes(size = Freq, x = as.character(Confidence), y = Difference)) + 
+  facet_wrap(~year, scales = "free_y", nrow = 1) +
+  scale_color_manual(values = my_colors, name = "") +
+  labs(
+    title = "Distribution of Count Differences (AI vs. Manual)",
+    caption = "",
+    x = "Confidence",
+    y = "Difference (AI - Manual)",
+    fill = "Comparison"
+  ) +
+  theme_bw() +
+  theme(plot.title = element_text(vjust = 2, size = 14, hjust = 0.5, face = "bold", family = "Times", color = "#5A5F63"),
+        plot.subtitle = element_text(vjust = 2, size = 12, hjust = 0.5, family = "Times", face = "italic", color = "#5A5F63"),
+        strip.text.y = element_text(size = 12, family = "Times", color = "white", angle = 0),
+        strip.text.x = element_text(size = 12, family = "Times", color = "white", angle = 0),
+        axis.text.x=element_text(size=12, family = "Times", vjust = 0.5, angle = 90),
+        axis.text.y=element_text(size=12, family = "Times"),
+        axis.title.x=element_text(size=14, face="bold", family = "Times", vjust = -3, color = "#5A5F63"),
+        axis.title.y=element_text(size=14, face="bold", family = "Times", vjust = 4, lineheight = 0.5, color = "#5A5F63"),
+        legend.title = element_text(size = 14, family = "Times", color = "#5A5F63"),
+        legend.text = element_text(size = 12, family = "Times", color = "#5A5F63"),
+        legend.position = "right",
+        plot.caption = element_text(size = 12, family = "Times", face = "italic", hjust = 0, vjust = -3),
+        panel.grid.major.y = element_line(color="#D9DADB", linewidth = .2),
+        panel.grid.minor.y = element_blank(),
+        #panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.spacing=unit(0.3,"lines"),
+        strip.background=element_rect(fill = "grey60", color = "grey60"),
+        axis.line = element_line( color="#5A5F63", linewidth = .2),
+        axis.text = element_text(family = "Times", 
+                                 colour = "#5A5F63", 
+                                 size = 11),
+        panel.background = element_blank(),
+        plot.margin = unit(c(0.2,0.2,0.3,0.3), "inches")) +
+  guides(
+    color = guide_legend(position = "bottom", override.aes = list(size = 5), theme = theme(legend.key.spacing.x = unit(0.5, "cm")))
+  )
+print(difference_plot)
+ggsave(difference_plot, filename = paste0(outdir, "Part III - Data Analysis/Figures/", species, "_count_differences.png"), device = "png", dpi = 300, height = 6, width = 8)
+}
+```
+
+
+***
+
+<br> 
+
+
+```{r, echo=FALSE, warning=FALSE, error=FALSE, results = 'asis', message = FALSE, fig.height = 5.5, fig.width = 7}
+if (nrow(spec_master) == 0) {
+    cat("\n\n**No further data will be generated for this species due to no data available. A lack of data could be due to the filtering out of large schools (i.e., schools manually coded as 299, 399, or 999).**\n\n")
+  precision <- list()
+  difference <- list()
+  false_ratios <- list()
+  precision[[1]] <- data.frame(n = 0, validn = 0, R = NA, PercAgree = NA, ASD = NA, ACV = NA, AAD = NA, APE = NA, Confidence = "NONE", year = "NONE")
+  difference[[1]] <- data.frame(Count = NA, Frequency = NA, Confidence = "NONE", year = "NONE")
+  } else {
+cat("\n# Analysis by Year {.tabset}\n\n")
+# Creating the blank datasets that will get outputted from the loop. These datasets will contain both confidence by year information for each species
+precision <- list()
+difference <- list()
+false_ratios <- list()
+
+# running the big year over year loop
+for (year.run in unique_years) {
+# subsetting the data    
+pa_spec_year <- pa_spec %>% dplyr::filter(year == year.run)
+spec_master_year <- spec_master %>% dplyr::filter(year == year.run)
+sub_false_year <- sub_false %>% dplyr::filter(year == year.run)
+mod_false <- sub_false_year %>% 
+  dplyr::mutate(Species = gsub("_", " ", str_to_sentence(Species)),
+                year = as.character(year)) %>%
+  dplyr::select(year, Confidence, Precision, Accuracy, FP, FN, False_P_Ratio, False_N_Ratio, FPR, FNR, Total_Actual_Positives, Total_Actual_Negatives)
+
+mod_false_table <- mod_false %>%
+  dplyr::group_by(year, Confidence) %>%
+  summarise_all(mean)
+
+
+# Create the top-level Year Tab 
+cat(paste0("\n\n## ", year.run, "\n"))
+
+
+#### FALSE POSITIVES AND NEGATIVES
+cat("\n### False Positives and Negatives\n")
+
+if (nrow(mod_false) == 0) {
+    cat("No false positives or negatives for this species.\n\n")
+  } else {
+    cat("Average VIAME performance metrics for each confidence threshold.\n\n")
+    ft <- flextable(mod_false_table) %>% autofit() %>% 
+          colformat_num(j = c("False_P_Ratio", "False_N_Ratio"), digits = 4) %>% 
+          fit_to_width(9)
+    cat(knitr::knit_print(ft))
+  }
+ 
+cat("\n\n### Linear Model Plots for all Confidences\n")
+
+if (nrow(spec_master_year) > 0) {
+# Call the function to save and print the plot
+print(lm_plots(spec_master_year, species, year.run))
+} else {
+  cat("\n\n**No linear model plots for this species for this year due to a lack of data.**\n\n")
+}
+
+    #### exact vs. relaxed agreement
+    if (nrow(pa_spec_year) > 0) { # only need this tab if there is data for percent agreement
+    cat("\n\n### ", "Exact vs. Relaxed Agreement", "\n") 
+    cat("**Exact percent agreement** is the percent of stations where the manual and VIAME counts were exact.\n\n")
+    cat("**Relaxed percent agreement** is the percent of stations where the manual and the VIAME counts were within +/- 1 of each other.\n\n")
+  PA_comp_plot <- ggplot(pa_spec_year, aes(x=as.factor(Confidence), y=percentage_1s, fill=Agreement)) +
+  geom_bar(stat="identity", position="dodge", alpha=0.7, color="black") +
+  labs(title=" ",
+       x="Confidence",
+       y="% Deployments") +
+  scale_fill_manual(values=c("navyblue", "aquamarine")) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  theme_bw() +
+  theme(plot.title = element_text(vjust = 2, size = 14, hjust = 0.5, face = "bold", family = "Times", color = "#5A5F63"),
+        plot.subtitle = element_text(vjust = 2, size = 12, hjust = 0.5, family = "Times", face = "italic", color = "#5A5F63"),
+        strip.text.y = element_text(size = 12, family = "Times", color = "white", angle = 0),
+        strip.text.x = element_text(size = 12, family = "Times", color = "white", angle = 0),
+        axis.text.x=element_text(size=12, family = "Times", vjust = 0.5, angle = 90),
+        axis.text.y=element_text(size=12, family = "Times"),
+        axis.title.x=element_text(size=14, face="bold", family = "Times", vjust = -3, color = "#5A5F63"),
+        legend.key.spacing.x = unit(1.0, "cm"),
+        axis.title.y=element_text(size=14, face="bold", family = "Times", vjust = 4, lineheight = 0.5, color = "#5A5F63"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12, family = "Times", color = "#5A5F63"),
+        legend.position = "top",
+        plot.caption = element_text(size = 12, family = "Times", face = "italic", hjust = 0, vjust = -3),
+        panel.grid.major.y = element_line(color="#D9DADB", linewidth = .2),
+        panel.grid.minor.y = element_blank(),
+        #panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.spacing=unit(0.3,"lines"),
+        strip.background=element_rect(fill = "grey60", color = "grey60"),
+        axis.line = element_line( color="#5A5F63", linewidth = .2),
+        axis.text = element_text(family = "Times", 
+                                 colour = "#5A5F63", 
+                                 size = 11),
+        panel.background = element_blank(),
+        plot.margin = unit(c(0.2,0.2,0.3,0.3), "inches"))
+    print(PA_comp_plot)
+    }
+
+
+cat("<div class='panel panel-default' markdown='1'>")
+cat("<div class='panel-heading'>")
+cat("</div>")
+
+cat("<div class='panel-body' markdown='1'>")
+  
+# Create the 'Confidence' sub-tab 
+cat("\n\n### Confidence Thresholds {.tabset .tabset-fade .tabset-pills}\n")
+  
+# Confidence loop 
+for (c in c(1:9,95)) {
+  conf = as.numeric(paste0("0.", c))
+  loop_key <- paste(year.run, conf, sep = "_")
+  
+  cat(paste0("#### ", conf, "\n")) # Creates the 0.1, 0.2 tabs
+  
+  subdf <- spec_master_year %>% dplyr::filter(Confidence == conf)
+  
+  if (nrow(subdf) == 0) {
+    cat(paste0("No presence at a confidence of ", conf, " for ", gsub("_", " ", str_to_sentence(species)), ".\n\n"))
+    
+    # creating dummy precision and difference data frames to be joined with the rest when there is actual data available
+    precision[[loop_key]] <- data.frame(n = 0, validn = 0, R = NA, PercAgree = NA, ASD = NA, ACV = NA, AAD = NA, APE = NA, Confidence = conf, year = year.run)
+    difference[[loop_key]] <- data.frame(Count = NA, Frequency = NA, Confidence = conf, year = year.run)
+    
+  } else if (nrow(subdf) == 1) {
+    
+    #### bias
+    cat("\n\n##### ", "Bias", "\n")    
+    ab.out = ageBias(VIAME_MaxN~Manual, data = subdf, nref.lab="VIAME MaxN", ref.lab="Validated Set MaxN")
+    summary(ab.out,what=c("n"))
+    sink(tempfile())
+    sym1 <- summary(ab.out,what=c("table",flip.table=FALSE, na.rm = T))
+    sink()
+    if (nrow(sym1)>=40){
+    sym2 <- data.frame(array(sym1, dim(sym1)))
+    names(sym2) <- as.numeric(row.names(sym2))-1
+    row.names(sym2) <- as.numeric(row.names(sym2))-1
+    sym2 <- sym2[colSums(sym2) != 0]
+    sym2 <- sym2[rowSums(sym2) != 0,]
+    cat(pander(sym2, style = "rmarkdown"))
+    } else {
+    cat(pander(sym1, style = "rmarkdown"))      
+    }
+    sink(tempfile())
+    sym3 <- data.frame(summary(ab.out,what=c("symmetry")))
+    sink()
+    cat(pander(sym3, style = "rmarkdown"))
+    plot(ab.out)
+    plotAB(ab.out)
+    
+    cat("\n\n##### ", "Precision, Difference, and Models", "\n") 
+    cat(paste0("Only one data point for a confidence of ", conf, ". Therefore, no precision, difference, or model output summaries.\n\n"))
+    
+    # creating dummy precision and difference data frames to be joined with the rest when there is actual data available
+    precision[[loop_key]] <- data.frame(n = 1, validn = 1, R = NA, PercAgree = NA, ASD = NA, ACV = NA, AAD = NA, APE = NA, Confidence = conf, year = year.run)
+    difference[[loop_key]] <- data.frame(Count = NA, Frequency = NA, Confidence = conf, year = year.run)
+  } else {
+
+    
+    #### bias
+    cat("\n\n##### ", "Bias", "\n")    
+    ab.out = ageBias(VIAME_MaxN~Manual, data = subdf, nref.lab="VIAME MaxN", ref.lab="Validated Set MaxN")
+    
+    cat("\n\n**Figure 1**. Shows potential differences in paired counts between validated counts and VIAME counts. The mean (points) and 95% confidence interval (vertical lines) for the VIAME counts are computed at each value of the validated counts. The dotted line represents a 1:1 agreement line between the two counts.\n")
+    plotAB(ab.out)
+    cat("\n\n")  
+    
+    cat("\n\n**Figure 2**. Plots the difference between the two counts on the y-axis against the validated counts on the x-axis. A histogram of the validated counts is shown in the top margin and a histogram of the differences if shown in the right margin. The horizontal line represents an agreement line at a difference of zero. Also shown are the means and ranges for the VIAME counts at each of the validated counts (points and vertical lines, respectively). Means with an open dot are mean count differences that are significantly different from zero.\n")
+    plot(ab.out)
+    cat("\n\n")   
+    
+    summary(ab.out,what=c("n"))
+    sink(tempfile())
+    sym1 <- summary(ab.out,what=c("table",flip.table=FALSE))
+    sink()
+    sym2 <- data.frame(array(sym1, dim(sym1)))
+    names(sym2) <- as.numeric(row.names(sym2))-1
+    row.names(sym2) <- as.numeric(row.names(sym2))-1
+    sym2 <- sym2[colSums(sym2) != 0]
+    sym2 <- sym2[rowSums(sym2) != 0,]
+    cat('\n')
+    cat(pander(sym2, style = "rmarkdown"))
+    sink(tempfile())
+    sym3 <- data.frame(summary(ab.out,what=c("symmetry")))
+    sink()
+    
+    cat('\n')
+    cat(pander(sym3, style = "rmarkdown"))
+    cat("\n\n")
+
+
+cat('\n')
+cat("\n\n")
+
+    #### precision
+    cat("\n\n##### ", "Precision", "\n") 
+    ap.out <- agePrecision(~Manual+VIAME_MaxN,data=subdf)
+    sink(tempfile())
+    precdetails <- summary(ap.out,what="details") 
+    precdetails <- precdetails[order(precdetails$CV),]
+    precdetails <- precdetails[order(precdetails$PE, decreasing = T),]
+    sink()
+    #cat(pander(precdetails, style = "rmarkdown"))
+    sink(tempfile())
+    precision[[loop_key]] <- data.frame(summary(ap.out,what="precision"))
+    sink()
+    cat(pander(precision[[loop_key]], style = "rmarkdown"))
+    precision[[loop_key]] <- precision[[loop_key]] %>% dplyr::mutate(Confidence = conf, year = year.run)
+    
+    cat("\n\n")
+    cat("\n\n")
+    
+    
+    #### difference
+    cat("\n\n##### ", "Difference", "\n") 
+    sink(tempfile())
+    difference[[loop_key]] <- data.frame(summary(ap.out,what="difference"))
+    sink()
+    if (length(difference[[loop_key]]) > 2) {
+      difference[[loop_key]] <- difference[[loop_key]] %>% dplyr::select(Var2, Freq)
+      names(difference[[loop_key]]) <- c("Count", "Frequency")
+    } else {
+      names(difference[[loop_key]]) <- c("Count", "Frequency")
+      difference[[loop_key]] <- difference[[loop_key]] %>% dplyr::filter(Frequency > 0)
+    }
+    cat(pander(difference[[loop_key]], style = "rmarkdown"))
+    difference[[loop_key]] <- difference[[loop_key]] %>% dplyr::mutate(Confidence = conf, year = year.run)
+    cat("\n\n&nbsp;\n")
+
+    cat("\n\n")
+    cat("\n\n")
+    
+    #### models
+    cat("\n\n##### ", "Models", "\n") 
+    glm.out <- glm(Manual ~ VIAME_MaxN, family = poisson(),data=subdf)
+    sink(tempfile())
+    glmsummary <- summary(glm.out)
+    sink()
+    print(glmsummary$call)
+    cat(pander(glmsummary))
+    cat("\n\n&nbsp;\n")
+    cat("\n\n&nbsp;\n")
+    lm.out <- lm(Manual ~ VIAME_MaxN,data=subdf)
+    sink(tempfile())
+    lmsummary <- summary(lm.out)
+    sink()
+    print(lmsummary$call)
+    cat(pander(lmsummary))
+    cat("\n\n")
+    cat("\n\n")
+  }
+ }
+  cat("</div>")
+  cat("</div>")
+}}
+```
